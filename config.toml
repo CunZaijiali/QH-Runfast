@@ -1,0 +1,13 @@
+[meta]
+user = "CunZai1069"
+config_path = "D:/GlobalScripts/config.toml"
+log_path = "D:/GlobalScripts/logs"
+
+[[item]]
+name = "网易云音乐"
+alias = [""]
+keywords = []
+path = []
+start_args = []
+work_dir = ""
+description = ""

@@ -1,0 +1,27 @@
+[package]
+name = "run-fast"
+version = "0.1.0"
+edition = "2024"
+authors = ["CunZai1069 <cunzai1069@gmail.com>"]
+description = "Start configured programs quickly"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/CunZaijiali/QH-Runfast"
+include = ["config.toml"]
+publish = false
+
+[dependencies]
+clap = "4.6.7"
+toml = "1.1.6"
+serde = {version="1.0.229", features=["derive"]}
+
+[profile.release]
+opt-level = 3
+debug = false
+rpath = false
+lto = true
+debug-assertions = false
+codegen-units = 1
+panic = 'abort'
+incremental = false
+overflow-checks = false
