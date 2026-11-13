@@ -11,6 +11,38 @@ $ runf list        # 看看都配了些什么
 $ runf search sql  # 按关键词找
 ```
 
+## 安装
+
+**从 crates.io 安装（推荐）**
+
+```bash
+cargo install run-fast
+```
+
+安装后命令名是 **`runf`**（包名是 `run-fast`，二进制名是 `runf`）。
+
+**从源码安装到本地**
+
+```bash
+git clone https://github.com/CunZaijiali/QH-Runfast
+cd QH-Runfast
+cargo install --path .
+```
+
+**只构建、不安装**
+
+```bash
+cargo build --release
+```
+
+产物是 `target/release/runf.exe`（包里定义了 `[[bin]] name = "runf"`），把它放进任意已在 `PATH` 上的目录即可，例如：
+
+```powershell
+Copy-Item .\target\release\runf.exe "$env:LOCALAPPDATA\Programs\runf\runf.exe"
+```
+
+需要 Rust **1.85+**（edition 2024）。
+
 ## 特性
 
 - **按名字 / 别名启动**：大小写不敏感，自动去掉首尾空格
@@ -18,34 +50,16 @@ $ runf search sql  # 按关键词找
 - **关键词搜索**：`search` 会在 name / alias / keywords / path / description 里找
 - **工作目录自动处理**：未显式指定时，自动把子进程的工作目录设为程序自身所在目录
   （等价于 Windows 快捷方式的「起始位置」，可解决 OBS 这类程序找不到自身 `locale`/`data` 的问题）
+- **参数透传**：`--args "..."` 在配置的启动参数之后追加临时参数，不必为每种参数组合建条目
 - **`.bat` / `.cmd` 支持**：自动经 `cmd /S /C` 启动
 - **批量启动**：一条命令可同时启动多个目标
 - **进程跟踪**：`--track` 等待子进程结束并汇报退出状态
 - **配置自检**：重复的 `name` / `alias` 会在启动前被拒绝，避免「配错了却不知道」
 
-## 构建
-
-需要 Rust 工具链（edition 2024）。
-
-```bash
-git clone <this-repo>
-cd run-fast
-cargo build --release
-```
-
-产物在 `target/release/run-fast.exe`。把它改名（或复制）为 `runf.exe`，
-放进任意已在 `PATH` 上的目录即可，例如：
-
-```powershell
-Copy-Item .\target\release\run-fast.exe "$env:LOCALAPPDATA\Programs\runf\runf.exe"
-```
-
-> 低于 `0.1.0` 的版本号、以及 `runf` 这个命令名，都由源码里的常量决定。
-
 ## 快速开始
 
 1. 建一份配置（见下节），例如 `D:\GlobalScripts\bin\config.toml`
-2. 把 `runf.exe` 放到 PATH 上
+2. 确保 `runf` 在 `PATH` 上
 3. 运行：
 
 ```
@@ -118,12 +132,13 @@ Commands:
   list,   -l, --list    List all configured programs
 
 Arguments:
-  [TARGET]...           要启动的 name 或 alias，可给多个
+  [TARGET]...            要启动的 name 或 alias，可给多个
 
 Options:
-  -c, --config <FILE>   指定 TOML 配置文件
-  -t, --track           等待子进程结束并汇报退出状态
-  -p, --path <PROGRAM>  直接启动某个程序（可重复指定）
+  -c, --config <FILE>    指定 TOML 配置文件
+  -t, --track            等待子进程结束并汇报退出状态
+      --args <ARGS>      追加到该条目 start_args 之后的临时参数（可重复）
+  -p, --path <PROGRAM>   直接启动某个程序（可重复指定）
   -h, --help
   -V, --version
 ```
@@ -139,6 +154,29 @@ runf list                  # 列出全部条目
 runf search editor         # 搜索
 runf search editor rust    # 多个关键词为「与」关系，需同时命中
 ```
+
+### 参数透传：`--args`
+
+配置里的 `start_args` 是固定的；临时想加参数（换镜像、加调试开关、改内存大小）不必改配置：
+
+```bash
+runf qemu --args "-m 512 -accel tcg"
+runf qemu --args "-m 512" --args "-s -S"     # 可重复，按顺序累积
+```
+
+规则：
+
+- 值按**空白**切成若干个参数，追加在 `start_args` **之后**
+- 用**双引号或单引号**包裹含空格的值（引号本身会被剥掉）：
+  ```bash
+  runf qemu --args '-drive "format=raw,file=D:/my os/bios.img"'
+  ```
+- **反斜杠不是转义符**，`D:\XiangMu\QH_OS` 这类 Windows 路径原样传给子进程
+- 空串或全空白视为「不追加」，行为与不带该选项完全一致
+- 与 `-p/--path` 一起用时，这些参数就是该程序的全部参数（没有 `start_args` 可追加）
+
+> 注意：从启动器（不打开控制台）启动程序时，`-serial stdio` 这类依赖标准输出的参数看不到输出，
+> 需要留痕时改用文件形式，例如 `--args "-serial file:D:/tmp/serial.log"`。
 
 ### `search` 与「启动」的匹配方式不同
 
@@ -175,7 +213,7 @@ lto = true
 lto = "thin"
 ```
 
-即可正常编译（产物略大一点，功能无差别）。
+即可正常编译（产物略大一点，功能无差别）。本仓库当前已经使用 `thin`。
 
 **Q：改了配置要重新编译吗？**
 不用。配置是运行时读取的普通文本文件。
@@ -185,6 +223,13 @@ lto = "thin"
 
 **Q：启动报 `target 'xxx' has no usable program path`？**
 `path` 里所有候选都启动失败了，错误信息里会带上每个候选的具体失败原因。
+
+**Q：Windows 上跑 `cmd.exe` 报 `The directory or file cannot be created.`？**
+`cmd.exe` 不接受 argv[0] 里带正斜杠的自身路径。配置里把 `path` 写成反斜杠形式
+（`C:\\Windows\\System32\\cmd.exe`）即可，其他程序一般不受影响。
+
+**Q：为什么安装后的命令叫 `runf` 而不是 `run-fast`？**
+包名 `run-fast` 便于在 crates.io 上识别，二进制名由 `[[bin]] name = "runf"` 固定为短名。
 
 ## 许可
 
