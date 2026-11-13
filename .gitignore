@@ -1,4 +1,5 @@
 /target
 *.bak
+*.bak-*
 *.tmp
 *.orig

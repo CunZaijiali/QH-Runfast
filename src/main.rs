@@ -63,6 +63,16 @@ fn cli() -> Command {
                 .action(ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("args")
+                .long("args")
+                .value_name("ARGS")
+                .help(
+                    "Extra arguments appended to the configured start_args; split on whitespace, \
+                     so quote the whole string and use \"...\" inside it for paths containing spaces",
+                )
+                .action(ArgAction::Append),
+        )
+        .arg(
             Arg::new("path")
                 .short('p')
                 .long("path")
@@ -147,6 +157,17 @@ fn run(matches: ArgMatches) -> Result<(), String> {
         .get_many::<String>("path")
         .map(|values| values.map(PathBuf::from).collect::<Vec<_>>())
         .unwrap_or_default();
+    // `--args` may be supplied several times; each occurrence is split on
+    // whitespace and appended in the order given, after the configured
+    // `start_args` of every launched program.
+    let extra_args = matches
+        .get_many::<String>("args")
+        .map(|values| {
+            values
+                .flat_map(|value| split_args(value))
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
 
     if targets.is_empty() && direct_paths.is_empty() {
         let mut command = cli();
@@ -165,14 +186,14 @@ fn run(matches: ArgMatches) -> Result<(), String> {
             let item = find_item(&config.item, target).ok_or_else(|| {
                 format!("unknown target '{target}'; use 'runf list' to inspect entries")
             })?;
-            let child = launch_item(item, config_dir)?;
+            let child = launch_item(item, config_dir, &extra_args)?;
             println!("started {} (PID {})", item.name, child.id());
             children.push((item.name.clone(), child));
         }
     }
 
     for path in direct_paths {
-        let child = spawn_program(&path, &[], None)
+        let child = spawn_program(&path, &extra_args, None)
             .map_err(|error| format!("failed to start '{}': {error}", path.display()))?;
         println!("started {} (PID {})", path.display(), child.id());
         children.push((path.display().to_string(), child));
@@ -350,7 +371,11 @@ impl AsRef<ConfigItem> for ConfigItem {
     }
 }
 
-fn launch_item(item: &ConfigItem, config_dir: &Path) -> Result<Child, String> {
+fn launch_item(
+    item: &ConfigItem,
+    config_dir: &Path,
+    extra_args: &[String],
+) -> Result<Child, String> {
     if item.path.is_empty() {
         return Err(format!("target '{}' has no program path", item.name));
     }
@@ -370,6 +395,11 @@ fn launch_item(item: &ConfigItem, config_dir: &Path) -> Result<Child, String> {
         ));
     }
 
+    // Configured arguments first, then whatever `--args` supplied. A `--path`
+    // launch has no configured arguments, so it receives only the extra ones.
+    let mut arguments = item.start_args.clone();
+    arguments.extend_from_slice(extra_args);
+
     let mut failures = Vec::new();
     for configured_path in &item.path {
         if configured_path.as_os_str().is_empty() {
@@ -377,7 +407,7 @@ fn launch_item(item: &ConfigItem, config_dir: &Path) -> Result<Child, String> {
         }
         let program = resolve_program(config_dir, configured_path);
         let working_directory = resolve_work_dir(explicit_work_dir.clone(), &program);
-        match spawn_program(&program, &item.start_args, working_directory.as_deref()) {
+        match spawn_program(&program, &arguments, working_directory.as_deref()) {
             Ok(child) => return Ok(child),
             Err(error) => failures.push(format!("'{}': {error}", program.display())),
         }
@@ -426,6 +456,49 @@ fn resolve_relative(base: &Path, path: &Path) -> PathBuf {
     } else {
         base.join(path)
     }
+}
+
+/// Splits an `--args` value into individual program arguments.
+///
+/// Arguments are separated by whitespace. Double or single quotes group a value
+/// that itself contains spaces, e.g.
+/// `--args "-drive \"format=raw,file=D:/my os/bios.img\""` (as written in the
+/// shell: `--args '-drive "format=raw,file=D:/my os/bios.img"'`).
+/// Backslashes are never treated as escape characters, because Windows paths are
+/// full of them and `D:\XiangMu\QH_OS` must reach the child process untouched.
+/// An empty or whitespace-only value yields no arguments at all.
+fn split_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut in_token = false;
+
+    for character in input.chars() {
+        match quote {
+            Some(active) if character == active => quote = None,
+            Some(_) => current.push(character),
+            None if character == '"' || character == '\'' => {
+                quote = Some(character);
+                in_token = true;
+            }
+            None if character.is_whitespace() => {
+                if in_token {
+                    args.push(std::mem::take(&mut current));
+                    in_token = false;
+                }
+            }
+            None => {
+                current.push(character);
+                in_token = true;
+            }
+        }
+    }
+
+    if in_token {
+        args.push(current);
+    }
+
+    args
 }
 
 fn spawn_program(
@@ -593,5 +666,35 @@ mod tests {
 
         // A bare name (PATH lookup) has no directory to offer: inherit as before.
         assert_eq!(resolve_work_dir(None, Path::new("app.exe")), None);
+    }
+
+    #[test]
+    fn splits_extra_arguments_on_whitespace() {
+        assert_eq!(split_args("-m 512"), vec!["-m", "512"]);
+        assert_eq!(
+            split_args("   -drive   format=raw,file=bios.img   "),
+            vec!["-drive", "format=raw,file=bios.img"]
+        );
+        assert_eq!(split_args("-s -S"), vec!["-s", "-S"]);
+        assert!(split_args("").is_empty());
+        assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn keeps_quoted_arguments_and_windows_paths_intact() {
+        // A quoted value keeps its spaces but loses the quotes.
+        assert_eq!(
+            split_args(r#"-drive "format=raw,file=D:/my os/bios.img""#),
+            vec!["-drive", "format=raw,file=D:/my os/bios.img"]
+        );
+        // Backslashes are data, not escapes.
+        assert_eq!(
+            split_args(r"-drive format=raw,file=D:\XiangMu\QH_OS\bios.img"),
+            vec!["-drive", r"format=raw,file=D:\XiangMu\QH_OS\bios.img"]
+        );
+        // An explicitly quoted empty value is still an argument.
+        assert_eq!(split_args(r#"-name "" "#), vec!["-name", ""]);
+        // Single quotes work the same way.
+        assert_eq!(split_args("--title 'my kernel'"), vec!["--title", "my kernel"]);
     }
 }
